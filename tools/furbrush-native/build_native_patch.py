@@ -97,7 +97,7 @@ put(0xc00,view_code);put(0xd80,reset_code)
 put(0xe00,bytes([1,4,1,0,4,0x62,0,0]));put(0xe20,bytes([1,4,1,0,4,0x62,0,0]))
 window_title=put(0x1800,b'Window\0');info_title=put(0x1840,b'Info\0')
 about_title=put(0x1880,b'About FurBrush\0')
-about_version=put(0x1900,b'FurBrush v%1\nBased on Sisir\nCopyright (c) 2026 Sisir Project\0')
+about_version=put(0x1900,'FurBrush v%1\nCopyright © 2026 Taron Sohn\x00'.encode('utf-8'))
 window_code,info_code=emit_window_menus(va+0x1000,va+0x1500,imports,window_title,info_title,widgets,toggle_name)
 assert len(window_code)<0x400 and len(info_code)<0x300
 put(0x1000,window_code);put(0x1500,info_code)

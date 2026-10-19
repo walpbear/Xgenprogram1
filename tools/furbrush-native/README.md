@@ -73,3 +73,7 @@ The original About QAction creation call at `0x14021bbff` is wrapped to attach t
 The new helpers use only volatile registers plus locals, preserve MainWindow in the original caller's RDI, clean up temporary QString objects, guard null objects/export lookups, and have unwind entries. The exception table was moved within the appended section to accommodate the additional code/data while preserving all original entries.
 
 24 new emulated cases cover menu creation, missing menu/dock/action/module/export cases, dynamic export resolution, returned-object preservation, QString cleanup, and two load addresses. All 50 existing helper cases still pass. Qt tests verified visible menu ordering, four dock actions through hide/show/close/reopen, and an original About callback invoked through the new Info menu. The full Windows application remains untested here.
+
+### Info label customization
+
+At the user's request, the Info/About version label now displays `FurBrush v%1` and `Copyright © 2026 Taron Sohn`; the previously added `Based on Sisir` line is removed from that label. The original bundled license and original model/third-party notices remain intact. The exact referenced UTF-8 payload was checked in the final PE, and all 74 helper emulator cases passed. This text customization does not alter original license terms or establish copyright ownership over third-party code.
