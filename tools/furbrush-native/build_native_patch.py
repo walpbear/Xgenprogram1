@@ -135,7 +135,7 @@ if args.retro_ui:
  local_style='QLineEdit { background: #101214; color: #C9D1D9; border: 1px solid #2B3138; border-radius: 4px; padding: 2px 6px; selection-background-color: #3A7BFF; }'
  local_offset=source.read_bytes().find(local_style.encode('utf-16le'))
  assert local_offset>=0
- restyled=local_style.replace('#101214','#ffffff').replace('#C9D1D9','#17304e').replace('#2B3138','#97abc2').replace('#3A7BFF','#3b82c4')
+ restyled='/* External FurBrush theme */'.ljust(len(local_style))
  assert len(restyled)==len(local_style)
  patch_va(base+original.get_rva_from_offset(local_offset),restyled.encode('utf-16le'))
 config=lief.PE.Builder.config_t();config.resources=False
