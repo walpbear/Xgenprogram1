@@ -1,0 +1,5 @@
+[0ms] ----- render debug session start -----
+[2ms][RENDER] QtRenderViewportWidget ctor: meshVersion=0
+[1232ms][GL] context: 4.6 profile=2 depth=24 stencil=8 alpha=8 samples=0
+[1239ms][GL] GL_VERSION=4.6.0 NVIDIA 617.14 GL_RENDERER=NVIDIA GeForce RTX 5080/PCIe/SSE2 GL_VENDOR=NVIDIA Corporation
+[1258ms][GL] draw target: fbo=1 samples=8 sampleBuffers=1 requestedSamples=0
