@@ -1,0 +1,10 @@
+{
+  "source_sha256": "7d5c695776a42a43ca652ba502aea36926db31c1a5ebe95c31899d05ae7d4b1b",
+  "output_sha256": "3c08e51a093d904d62367b9b77a84ac5ca89b48c10a040c9a574c97bc01956ab",
+  "helper_va": "0x14043c000",
+  "helper_size": 158,
+  "title_instruction": "0x140251e20",
+  "help_instruction": "0x14021bad4",
+  "unwind_table_rva": "0x43d000",
+  "note": "Static and emulator verification only; not tested on Windows."
+}

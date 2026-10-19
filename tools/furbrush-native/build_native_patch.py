@@ -1,0 +1,111 @@
+"""Version-specific FurBrush title / hidden Help-menu patch.
+Original executable must match the uploaded version; no original is overwritten.
+Requires lief, pefile, capstone, keystone-engine (see pinned validation environment).
+"""
+from pathlib import Path
+import argparse,hashlib,json,struct
+import lief,pefile,capstone
+from keystone import Ks,KS_ARCH_X86,KS_MODE_64
+parser=argparse.ArgumentParser()
+parser.add_argument('--repo',type=Path,default=Path('/workspace/Xgenprogram1'))
+parser.add_argument('--package',type=Path,default=Path('/workspace/FurBrush-package'))
+parser.add_argument('--analysis',type=Path,default=Path('/workspace/furbrush-analysis'))
+args=parser.parse_args()
+root=args.package.resolve();source=args.repo.resolve()/'Sisir.exe'
+artifacts=args.analysis.resolve();artifacts.mkdir(parents=True,exist_ok=True)
+assert hashlib.sha256(source.read_bytes()).hexdigest()=='7d5c695776a42a43ca652ba502aea36926db31c1a5ebe95c31899d05ae7d4b1b', 'Unsupported Sisir version'
+# First reproduce the verified icon-only build, before applying this patch.
+original=pefile.PE(str(source)); base=original.OPTIONAL_HEADER.ImageBase
+input_file=root/'FurBrush-icon-only.exe'
+p=pefile.PE(str(input_file));binary=lief.PE.parse(str(input_file))
+assert source.read_bytes()[original.get_offset_from_rva(0x251e20):][:7] == bytes.fromhex('488d15c9660c00')
+assert source.read_bytes()[original.get_offset_from_rva(0x21bad4):][:6] == bytes.fromhex('ff15b6560e00')
+assert p.get_data(0x251e20,7)==original.get_data(0x251e20,7)
+assert p.get_data(0x21bad4,6)==original.get_data(0x21bad4,6)
+# Resolve imports and verify every dynamic export against uploaded runtime DLLs.
+imports={e.name.decode():e.address for d in p.DIRECTORY_ENTRY_IMPORT for e in d.imports if e.name}
+addmenu=imports['?addMenu@QMenuBar@@QEAAPEAVQMenu@@AEBVQString@@@Z']
+getmodule=imports['GetModuleHandleW'];getproc=imports['GetProcAddress']
+menu_name=b'?menuAction@QMenu@@QEBAPEAVQAction@@XZ'
+visible_name=b'?setVisible@QAction@@QEAAX_N@Z'
+for dll,symbol in [('Qt6Widgets.dll',menu_name),('Qt6Gui.dll',visible_name)]:
+ dll_pe=pefile.PE(str(args.repo/dll),max_symbol_exports=30000)
+ assert symbol in {e.name for e in dll_pe.DIRECTORY_ENTRY_EXPORT.symbols},symbol
+# Reserve a section for the helper, immutable strings and augmented unwind table.
+old_exception=p.OPTIONAL_HEADER.DATA_DIRECTORY[3]
+old_table=p.get_data(old_exception.VirtualAddress,old_exception.Size)
+sec=lief.PE.Section('.fbpatch');sec.content=[0]*((len(old_table)+0x2000+0xfff)&~0xfff)
+sec.characteristics=0x60000020 # initialized code, readable/executable, not writable
+sec=binary.add_section(sec);rva=sec.virtual_address;va=base+rva
+content=bytearray(sec.content)
+def put(off,data):content[off:off+len(data)]=data;return va+off
+prefix=put(0x400,b'FurBrush v\0')
+widgets=put(0x440,'Qt6Widgets.dll\0'.encode('utf-16le'))
+gui=put(0x480,'Qt6Gui.dll\0'.encode('utf-16le'))
+menusym=put(0x4c0,menu_name+b'\0');visiblesym=put(0x540,visible_name+b'\0')
+# Only volatile registers are used. Stack has Win64 shadow space and two locals.
+# Failures of optional lookups return the real menu unchanged rather than crash.
+asm=[]
+ks=Ks(KS_ARCH_X86,KS_MODE_64)
+fixups=[];labels={};code=bytearray()
+def ins(text):
+ b,_=ks.asm(text,va+len(code));code.extend(b)
+def rip(prefix,target):
+ addr=va+len(code);disp=target-(addr+len(prefix)+4)
+ code.extend(prefix+struct.pack('<i',disp))
+def branch(label):
+ code.extend(b'\x0f\x84\0\0\0\0');fixups.append((len(code)-4,label))
+ins('sub rsp, 0x38')
+rip(b'\xff\x15',addmenu)
+ins('mov qword ptr [rsp+0x20], rax');ins('test rax, rax');branch('done')
+rip(b'\x48\x8d\x0d',widgets);rip(b'\xff\x15',getmodule)
+ins('test rax, rax');branch('done');ins('mov rcx, rax')
+rip(b'\x48\x8d\x15',menusym);rip(b'\xff\x15',getproc)
+ins('test rax, rax');branch('done');ins('mov rcx, qword ptr [rsp+0x20]');ins('call rax')
+ins('test rax, rax');branch('done');ins('mov qword ptr [rsp+0x28], rax')
+rip(b'\x48\x8d\x0d',gui);rip(b'\xff\x15',getmodule)
+ins('test rax, rax');branch('done');ins('mov rcx, rax')
+rip(b'\x48\x8d\x15',visiblesym);rip(b'\xff\x15',getproc)
+ins('test rax, rax');branch('done');ins('mov rcx, qword ptr [rsp+0x28]');ins('xor edx, edx');ins('call rax')
+labels['done']=len(code)
+ins('mov rax, qword ptr [rsp+0x20]');ins('add rsp, 0x38');ins('ret')
+for off,label in fixups:struct.pack_into('<i',code,off,labels[label]-(off+4))
+assert len(code)<0x400
+put(0,code)
+# UWOP_ALLOC_SMALL for sub rsp,0x38: permit Windows x64 stack unwinding.
+put(0x600,bytes([1,4,1,0,4,0x62,0,0]))
+put(0x1000,old_table+struct.pack('<III',rva,rva+len(code),rva+0x600))
+entries=[struct.unpack_from('<III',content,0x1000+i) for i in range(0,len(old_table)+12,12)]
+assert entries==sorted(entries,key=lambda e:e[0])
+sec.content=list(content)
+binary.data_directories[3].rva=rva+0x1000
+binary.data_directories[3].size=len(old_table)+12
+# Redirect exactly one C-string constructor to the longer title prefix.
+new_lea=b'\x48\x8d\x15'+struct.pack('<i',prefix-(base+0x251e20+7))
+binary.patch_address(base+0x251e20,list(new_lea))
+# Keep Help menu creation/initialization; hide its menuAction in the helper.
+new_call=b'\xe8'+struct.pack('<i',va-(base+0x21bad4+5))+b'\x90'
+binary.patch_address(base+0x21bad4,list(new_call))
+config=lief.PE.Builder.config_t();config.resources=False
+output=root/'FurBrush.exe';binary.write(str(output),config)
+check=pefile.PE(str(output));assert check.OPTIONAL_HEADER.AddressOfEntryPoint==p.OPTIONAL_HEADER.AddressOfEntryPoint
+assert check.get_data(rva,len(code))==code
+assert check.get_data(0x251e20,7)==new_lea
+assert check.get_data(0x21bad4,6)==new_call
+assert check.get_data(rva+0x400,11)==b'FurBrush v\0'
+# All bytes of existing .text other than these two instruction sites must match.
+a=bytearray(p.get_data(0x1000,0x2fd293));b=bytearray(check.get_data(0x1000,0x2fd293))
+for site,size in [(0x251e20,7),(0x21bad4,6)]:b[site-0x1000:site-0x1000+size]=a[site-0x1000:site-0x1000+size]
+assert a==b
+assert len(check.DIRECTORY_ENTRY_EXCEPTION)==len(p.DIRECTORY_ENTRY_EXCEPTION)+1
+for before,after in zip(p.sections,check.sections):
+ assert before.Name==after.Name and before.VirtualAddress==after.VirtualAddress
+ if before.Name.rstrip(b'\0')!=b'.text':assert before.get_data()==after.get_data(),before.Name
+assert [e.dll for e in p.DIRECTORY_ENTRY_IMPORT]==[e.dll for e in check.DIRECTORY_ENTRY_IMPORT]
+check.OPTIONAL_HEADER.CheckSum=check.generate_checksum();check.write(str(output))
+manifest={'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),'output_sha256':hashlib.sha256(output.read_bytes()).hexdigest(),'helper_va':hex(va),'helper_size':len(code),'title_instruction':hex(base+0x251e20),'help_instruction':hex(base+0x21bad4),'unwind_table_rva':hex(rva+0x1000),'note':'Static and emulator verification only; not tested on Windows.'}
+(artifacts/'native-patch.json').write_text(json.dumps(manifest,indent=2))
+(artifacts/'helper.bin').write_bytes(code)
+md=capstone.Cs(capstone.CS_ARCH_X86,capstone.CS_MODE_64)
+(artifacts/'helper.asm').write_text('\n'.join(f'{i.address:x}: {i.mnemonic} {i.op_str}' for i in md.disasm(code,va)))
+print(json.dumps(manifest,indent=2))
