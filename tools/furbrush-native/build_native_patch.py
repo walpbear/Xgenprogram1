@@ -5,6 +5,7 @@ Requires lief, pefile, capstone, keystone-engine (see pinned validation environm
 from pathlib import Path
 import argparse,hashlib,json,struct,io
 from PIL import Image
+from theme_helper import emit_theme_helper
 import lief,pefile,capstone
 from keystone import Ks,KS_ARCH_X86,KS_MODE_64
 parser=argparse.ArgumentParser()
@@ -78,14 +79,25 @@ ins('mov rax, qword ptr [rsp+0x20]');ins('add rsp, 0x38');ins('ret')
 for off,label in fixups:struct.pack_into('<i',code,off,labels[label]-(off+4))
 assert len(code)<0x400
 put(0,code)
+theme_code=b''
+if args.retro_ui:
+ tail=put(0xb00,'themes\\Windows7-Retro.qss\0'.encode('utf-16le'))
+ mode=put(0xb60,'rb\0'.encode('utf-16le'))
+ theme_code=emit_theme_helper(va+0x800,imports,tail,mode)
+ assert len(theme_code)<0x300
+ put(0x800,theme_code)
+ # UWOP_ALLOC_LARGE for 0x518-byte stack frame, 7-byte prologue.
+ put(0x680,bytes([1,7,2,0,7,1,0xa3,0]))
 # UWOP_ALLOC_SMALL for sub rsp,0x38: permit Windows x64 stack unwinding.
 put(0x600,bytes([1,4,1,0,4,0x62,0,0]))
-put(0x1000,old_table+struct.pack('<III',rva,rva+len(code),rva+0x600))
-entries=[struct.unpack_from('<III',content,0x1000+i) for i in range(0,len(old_table)+12,12)]
+new_table=old_table+struct.pack('<III',rva,rva+len(code),rva+0x600)
+if theme_code:new_table+=struct.pack('<III',rva+0x800,rva+0x800+len(theme_code),rva+0x680)
+put(0x1000,new_table)
+entries=[struct.unpack_from('<III',content,0x1000+i) for i in range(0,len(new_table),12)]
 assert entries==sorted(entries,key=lambda e:e[0])
 sec.content=list(content)
 binary.data_directories[3].rva=rva+0x1000
-binary.data_directories[3].size=len(old_table)+12
+binary.data_directories[3].size=len(new_table)
 # Redirect exactly one C-string constructor to the longer title prefix.
 new_lea=b'\x48\x8d\x15'+struct.pack('<i',prefix-(base+0x251e20+7))
 patch_va(base+0x251e20,new_lea)
@@ -121,16 +133,11 @@ for offset,old_size,is_ico in [(0x362164,17025,True),(0x3663e9,34691,False)]:
 # Retain %1 so the app's accent substitution continues without missing-arg warnings.
 style_sites=[]
 if args.retro_ui:
- md=capstone.Cs(capstone.CS_ARCH_X86,capstone.CS_MODE_64);md.detail=True;md.skipdata=True
- text=next(t for t in original.sections if t.Name.rstrip(b'\0')==b'.text')
- for i in md.disasm(text.get_data(),base+text.VirtualAddress):
-  if not i.id:continue
-  for operand in i.operands:
-   if operand.type==capstone.x86.X86_OP_MEM and operand.mem.base==capstone.x86.X86_REG_RIP and i.address+i.size+operand.mem.disp==base+0x31dca0:
-    assert i.mnemonic=='lea' and i.disp_size==4
-    data=bytearray(i.bytes);struct.pack_into('<i',data,i.disp_offset,style_comment-(i.address+i.size))
-    patch_va(i.address,data);style_sites.append(hex(i.address))
- assert style_sites,'No main stylesheet references found'
+ # Apply file content at the original local stylesheet setter, independently
+ # of command-line parsing or application/global-vs-local QSS precedence.
+ assert p.get_data(0x2518d9,6)==bytes.fromhex('ff1599050b00')
+ patch_va(base+0x2518d9,b'\xe8'+struct.pack('<i',(va+0x800)-(base+0x2518d9+5))+b'\x90')
+ style_sites.append(hex(base+0x2518d9))
  # A local UTF-16 input-field style would otherwise outrank the external theme.
  local_style='QLineEdit { background: #101214; color: #C9D1D9; border: 1px solid #2B3138; border-radius: 4px; padding: 2px 6px; selection-background-color: #3A7BFF; }'
  local_offset=source.read_bytes().find(local_style.encode('utf-16le'))
@@ -146,7 +153,7 @@ assert check.get_data(0x251e20,7)==new_lea
 assert check.get_data(0x21bad4,6)==new_call
 assert check.get_data(rva+0x400,11)==b'FurBrush v\0'
 # Every original section must equal the input plus exactly the declared patches.
-assert len(check.DIRECTORY_ENTRY_EXCEPTION)==len(p.DIRECTORY_ENTRY_EXCEPTION)+1
+assert len(check.DIRECTORY_ENTRY_EXCEPTION)==len(p.DIRECTORY_ENTRY_EXCEPTION)+1+(1 if theme_code else 0)
 for before,after in zip(p.sections,check.sections):
  assert before.Name==after.Name and before.VirtualAddress==after.VirtualAddress
  expected=bytearray(before.get_data());start=base+before.VirtualAddress
@@ -157,9 +164,10 @@ for before,after in zip(p.sections,check.sections):
  assert bytes(expected)==after.get_data(),before.Name
 assert [e.dll for e in p.DIRECTORY_ENTRY_IMPORT]==[e.dll for e in check.DIRECTORY_ENTRY_IMPORT]
 check.OPTIONAL_HEADER.CheckSum=check.generate_checksum();check.write(str(output))
-manifest={'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),'output_sha256':hashlib.sha256(output.read_bytes()).hexdigest(),'helper_va':hex(va),'helper_size':len(code),'title_instruction':hex(base+0x251e20),'help_instruction':hex(base+0x21bad4),'unwind_table_rva':hex(rva+0x1000),'embedded_icons':icon_details,'external_stylesheet_sites':style_sites,'note':'Static and emulator verification only; not tested on Windows.'}
+manifest={'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),'output_sha256':hashlib.sha256(output.read_bytes()).hexdigest(),'helper_va':hex(va),'helper_size':len(code),'title_instruction':hex(base+0x251e20),'help_instruction':hex(base+0x21bad4),'unwind_table_rva':hex(rva+0x1000),'theme_helper_va':hex(va+0x800) if theme_code else None,'theme_helper_size':len(theme_code),'embedded_icons':icon_details,'external_stylesheet_sites':style_sites,'note':'Static and emulator verification only; not tested on Windows.'}
 (artifacts/'native-patch.json').write_text(json.dumps(manifest,indent=2))
 (artifacts/'helper.bin').write_bytes(code)
 md=capstone.Cs(capstone.CS_ARCH_X86,capstone.CS_MODE_64)
 (artifacts/'helper.asm').write_text('\n'.join(f'{i.address:x}: {i.mnemonic} {i.op_str}' for i in md.disasm(code,va)))
+if theme_code:(artifacts/'theme-helper.bin').write_bytes(theme_code)
 print(json.dumps(manifest,indent=2))
