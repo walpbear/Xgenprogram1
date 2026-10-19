@@ -3,13 +3,15 @@ Original executable must match the uploaded version; no original is overwritten.
 Requires lief, pefile, capstone, keystone-engine (see pinned validation environment).
 """
 from pathlib import Path
-import argparse,hashlib,json,struct
+import argparse,hashlib,json,struct,io
+from PIL import Image
 import lief,pefile,capstone
 from keystone import Ks,KS_ARCH_X86,KS_MODE_64
 parser=argparse.ArgumentParser()
 parser.add_argument('--repo',type=Path,default=Path('/workspace/Xgenprogram1'))
 parser.add_argument('--package',type=Path,default=Path('/workspace/FurBrush-package'))
 parser.add_argument('--analysis',type=Path,default=Path('/workspace/furbrush-analysis'))
+parser.add_argument('--retro-ui',action='store_true',help='Enable external main-window stylesheet')
 args=parser.parse_args()
 root=args.package.resolve();source=args.repo.resolve()/'Sisir.exe'
 artifacts=args.analysis.resolve();artifacts.mkdir(parents=True,exist_ok=True)
@@ -38,8 +40,12 @@ sec=lief.PE.Section('.fbpatch');sec.content=[0]*((len(old_table)+0x2000+0xfff)&~
 sec.characteristics=0x60000020 # initialized code, readable/executable, not writable
 sec=binary.add_section(sec);rva=sec.virtual_address;va=base+rva
 content=bytearray(sec.content)
+patches=[]
+def patch_va(address,data):
+ binary.patch_address(address,list(data));patches.append((address,bytes(data)))
 def put(off,data):content[off:off+len(data)]=data;return va+off
 prefix=put(0x400,b'FurBrush v\0')
+style_comment=put(0x580,b'/* External FurBrush theme; original accent %1 */\0')
 widgets=put(0x440,'Qt6Widgets.dll\0'.encode('utf-16le'))
 gui=put(0x480,'Qt6Gui.dll\0'.encode('utf-16le'))
 menusym=put(0x4c0,menu_name+b'\0');visiblesym=put(0x540,visible_name+b'\0')
@@ -82,10 +88,56 @@ binary.data_directories[3].rva=rva+0x1000
 binary.data_directories[3].size=len(old_table)+12
 # Redirect exactly one C-string constructor to the longer title prefix.
 new_lea=b'\x48\x8d\x15'+struct.pack('<i',prefix-(base+0x251e20+7))
-binary.patch_address(base+0x251e20,list(new_lea))
+patch_va(base+0x251e20,new_lea)
 # Keep Help menu creation/initialization; hide its menuAction in the helper.
 new_call=b'\xe8'+struct.pack('<i',va-(base+0x21bad4+5))+b'\x90'
-binary.patch_address(base+0x21bad4,list(new_call))
+patch_va(base+0x21bad4,new_call)
+# Replace both application-embedded QResource images, preserving static offsets.
+# These are distinct from the executable's Windows icon resource.
+art=Image.open(args.repo/'FurBrush.png').convert('RGBA')
+side=max(art.size);square=Image.new('RGBA',(side,side),(0,0,0,0))
+square.paste(art,((side-art.width)//2,(side-art.height)//2))
+def png_that_fits(limit):
+ for size in [256,192,128,96,64]:
+  image=square.resize((size,size),Image.Resampling.LANCZOS)
+  for colors in [256,128,64]:
+   buf=io.BytesIO()
+   image.quantize(colors=colors,method=Image.Quantize.FASTOCTREE).save(buf,format='PNG',optimize=True)
+   if len(buf.getvalue())<=limit:return size,buf.getvalue()
+ raise ValueError('Cannot fit application icon in reserved resource')
+icon_details=[]
+for offset,old_size,is_ico in [(0x362164,17025,True),(0x3663e9,34691,False)]:
+ # QResource stores a big-endian size immediately before the resource data.
+ assert struct.unpack('>I',source.read_bytes()[offset-4:offset])[0]==old_size
+ dim,png=png_that_fits(old_size-(22 if is_ico else 0))
+ if is_ico:
+  data=struct.pack('<HHHBBBBHHII',0,1,1,dim%256,dim%256,0,0,1,32,len(png),22)+png
+ else:data=png
+ resource_rva=original.get_rva_from_offset(offset)
+ patch_va(base+resource_rva-4,struct.pack('>I',len(data)))
+ patch_va(base+resource_rva,data+b'\0'*(old_size-len(data)))
+ icon_details.append({'resource_offset':hex(offset),'dimension':dim,'bytes':len(data),'ico':is_ico})
+# A comment-only local stylesheet allows application-level external QSS to cascade.
+# Retain %1 so the app's accent substitution continues without missing-arg warnings.
+style_sites=[]
+if args.retro_ui:
+ md=capstone.Cs(capstone.CS_ARCH_X86,capstone.CS_MODE_64);md.detail=True;md.skipdata=True
+ text=next(t for t in original.sections if t.Name.rstrip(b'\0')==b'.text')
+ for i in md.disasm(text.get_data(),base+text.VirtualAddress):
+  if not i.id:continue
+  for operand in i.operands:
+   if operand.type==capstone.x86.X86_OP_MEM and operand.mem.base==capstone.x86.X86_REG_RIP and i.address+i.size+operand.mem.disp==base+0x31dca0:
+    assert i.mnemonic=='lea' and i.disp_size==4
+    data=bytearray(i.bytes);struct.pack_into('<i',data,i.disp_offset,style_comment-(i.address+i.size))
+    patch_va(i.address,data);style_sites.append(hex(i.address))
+ assert style_sites,'No main stylesheet references found'
+ # A local UTF-16 input-field style would otherwise outrank the external theme.
+ local_style='QLineEdit { background: #101214; color: #C9D1D9; border: 1px solid #2B3138; border-radius: 4px; padding: 2px 6px; selection-background-color: #3A7BFF; }'
+ local_offset=source.read_bytes().find(local_style.encode('utf-16le'))
+ assert local_offset>=0
+ restyled=local_style.replace('#101214','#ffffff').replace('#C9D1D9','#17304e').replace('#2B3138','#97abc2').replace('#3A7BFF','#3b82c4')
+ assert len(restyled)==len(local_style)
+ patch_va(base+original.get_rva_from_offset(local_offset),restyled.encode('utf-16le'))
 config=lief.PE.Builder.config_t();config.resources=False
 output=root/'FurBrush.exe';binary.write(str(output),config)
 check=pefile.PE(str(output));assert check.OPTIONAL_HEADER.AddressOfEntryPoint==p.OPTIONAL_HEADER.AddressOfEntryPoint
@@ -93,17 +145,19 @@ assert check.get_data(rva,len(code))==code
 assert check.get_data(0x251e20,7)==new_lea
 assert check.get_data(0x21bad4,6)==new_call
 assert check.get_data(rva+0x400,11)==b'FurBrush v\0'
-# All bytes of existing .text other than these two instruction sites must match.
-a=bytearray(p.get_data(0x1000,0x2fd293));b=bytearray(check.get_data(0x1000,0x2fd293))
-for site,size in [(0x251e20,7),(0x21bad4,6)]:b[site-0x1000:site-0x1000+size]=a[site-0x1000:site-0x1000+size]
-assert a==b
+# Every original section must equal the input plus exactly the declared patches.
 assert len(check.DIRECTORY_ENTRY_EXCEPTION)==len(p.DIRECTORY_ENTRY_EXCEPTION)+1
 for before,after in zip(p.sections,check.sections):
  assert before.Name==after.Name and before.VirtualAddress==after.VirtualAddress
- if before.Name.rstrip(b'\0')!=b'.text':assert before.get_data()==after.get_data(),before.Name
+ expected=bytearray(before.get_data());start=base+before.VirtualAddress
+ for address,data in patches:
+  if start<=address<start+len(expected):
+   assert address+len(data)<=start+len(expected)
+   expected[address-start:address-start+len(data)]=data
+ assert bytes(expected)==after.get_data(),before.Name
 assert [e.dll for e in p.DIRECTORY_ENTRY_IMPORT]==[e.dll for e in check.DIRECTORY_ENTRY_IMPORT]
 check.OPTIONAL_HEADER.CheckSum=check.generate_checksum();check.write(str(output))
-manifest={'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),'output_sha256':hashlib.sha256(output.read_bytes()).hexdigest(),'helper_va':hex(va),'helper_size':len(code),'title_instruction':hex(base+0x251e20),'help_instruction':hex(base+0x21bad4),'unwind_table_rva':hex(rva+0x1000),'note':'Static and emulator verification only; not tested on Windows.'}
+manifest={'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),'output_sha256':hashlib.sha256(output.read_bytes()).hexdigest(),'helper_va':hex(va),'helper_size':len(code),'title_instruction':hex(base+0x251e20),'help_instruction':hex(base+0x21bad4),'unwind_table_rva':hex(rva+0x1000),'embedded_icons':icon_details,'external_stylesheet_sites':style_sites,'note':'Static and emulator verification only; not tested on Windows.'}
 (artifacts/'native-patch.json').write_text(json.dumps(manifest,indent=2))
 (artifacts/'helper.bin').write_bytes(code)
 md=capstone.Cs(capstone.CS_ARCH_X86,capstone.CS_MODE_64)

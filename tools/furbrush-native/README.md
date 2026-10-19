@@ -27,3 +27,13 @@ python tools/furbrush-native/test_native_patch.py --package /path/to/output --an
 Independent PE parsing checks the patch, checksum, imports, original section contents and added unwind entry. Unicorn tests 14 helper cases across two load addresses, exercising successful hiding, null returns, missing DLL handles and missing method exports, with callee-clobbered volatile registers and shadow space. Nonvolatile registers, stack and original menu return are checked.
 
 Ghidra analysis and decompilation completed. The full Windows app has **not** been run: these checks cannot verify actual GUI appearance, Qt runtime behavior, exception handling during real allocation failures, or rendering. Test on Windows before relying on the patch. Use the original `Sisir.exe` to revert. The earlier launcher-based title workaround is not required for this executable's title.
+
+## Retro theme and dialog icon update
+
+The current builder also replaces the two Qt-embedded app logos (one ICO resource and one PNG resource), updating their big-endian QResource lengths while preserving fixed resource offsets. Images are converted from the supplied FurBrush.png to fit the existing allocation. Both resources decode in a Qt test. This covers app icons inherited by dialogs, without replacing standard question/warning symbols.
+
+`--retro-ui` additionally redirects the built-in main stylesheet constructor at `0x140251863` to a comment-only stylesheet, preserving its `%1` accent substitution. This allows the external application stylesheet to cascade. A local UTF-16 line-edit style is recolored with equal-length substitutions. Validation now permits exactly these declared data and instruction patches; other original section bytes still must match.
+
+The end-user package provides an editable `themes/Windows7-Retro.qss` and theme assets. Launch with `-style Fusion -stylesheet "<installation>/themes/Windows7-Retro.qss"` from the installation directory; the supplied BAT and splash launchers do this. The Geist Pixel font is included under its original OFL license for optional user installation. No system fonts, cursor settings or registry values are changed automatically.
+
+A representative Qt 6.12 Linux offscreen widget gallery loaded the font and stylesheet, rendered a preview without stylesheet parse/property errors, decoded the actual patched QResource images, and verified application-icon inheritance on a Qt save/discard dialog. This does not verify the Windows application or its actual exit prompt. The theme does not provide native Windows Aero glass frames.

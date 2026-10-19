@@ -1,10 +1,27 @@
 {
   "source_sha256": "7d5c695776a42a43ca652ba502aea36926db31c1a5ebe95c31899d05ae7d4b1b",
-  "output_sha256": "3c08e51a093d904d62367b9b77a84ac5ca89b48c10a040c9a574c97bc01956ab",
+  "output_sha256": "322b88ee40d25aa0bbf599e79805d68b7bb83d4426c80a5a6e0926e13625e304",
   "helper_va": "0x14043c000",
   "helper_size": 158,
   "title_instruction": "0x140251e20",
   "help_instruction": "0x14021bad4",
   "unwind_table_rva": "0x43d000",
+  "embedded_icons": [
+    {
+      "resource_offset": "0x362164",
+      "dimension": 256,
+      "bytes": 15462,
+      "ico": true
+    },
+    {
+      "resource_offset": "0x3663e9",
+      "dimension": 256,
+      "bytes": 18488,
+      "ico": false
+    }
+  ],
+  "external_stylesheet_sites": [
+    "0x140251863"
+  ],
   "note": "Static and emulator verification only; not tested on Windows."
 }
