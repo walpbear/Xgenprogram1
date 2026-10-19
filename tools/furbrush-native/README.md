@@ -63,3 +63,13 @@ The current patch wraps the View menu creation call at `0x14021b137` and adds th
 It also wraps the Default Layout viewport `addDockWidget` call at `0x1401ef01c`: first perform the original re-docking, then show and raise the same widget. No settings deletion or renderer/scene changes are added. Both helpers preserve Win64 ABI and have unwind entries.
 
 `test_dock_helpers.py` passed 16 emulated success/failure/relocation cases; existing title and saved-theme tests passed 14 and 20 cases. Qt verified the real dock toggle and show/raise recovery behavior. The Windows application's full Render panel remains untested. The end-user ZIP contains only the executable, readme and original license, preserving color settings.
+
+## Window menu beside File; Info/About
+
+The File menu creation call at `0x14021a373` now runs a helper which creates File normally, then appends Window before the original builder later appends Edit/View/Modules. It adds the four existing docks' own `toggleViewAction()` objects (MainWindow offsets `0x1c8`, `0x1d0`, `0x1d8`, `0x1e0`) through the existing QWidget::addAction import. It preserves the File QMenu return for the original population logic. This is non-destructive dock visibility control, not module/plugin unloading; original module-specific visibility logic is unchanged.
+
+The original About QAction creation call at `0x14021bbff` is wrapped to attach that same QAction to a new visible Info menu. The original builder still connects its original About callback after the helper returns the same action. The old Help menu stays hidden. Two CString constructor references inside the original About dialog now point to About FurBrush and a version/Sisir-credit label, retaining original model attribution and notices. No custom Info text was supplied, so version and credits were used as the documented default.
+
+The new helpers use only volatile registers plus locals, preserve MainWindow in the original caller's RDI, clean up temporary QString objects, guard null objects/export lookups, and have unwind entries. The exception table was moved within the appended section to accommodate the additional code/data while preserving all original entries.
+
+24 new emulated cases cover menu creation, missing menu/dock/action/module/export cases, dynamic export resolution, returned-object preservation, QString cleanup, and two load addresses. All 50 existing helper cases still pass. Qt tests verified visible menu ordering, four dock actions through hide/show/close/reopen, and an original About callback invoked through the new Info menu. The full Windows application remains untested here.

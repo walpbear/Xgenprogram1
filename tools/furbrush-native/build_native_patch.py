@@ -7,6 +7,7 @@ import argparse,hashlib,json,struct,io
 from PIL import Image
 from theme_helper import emit_theme_helper
 from dock_helpers import emit_dock_helpers
+from window_menu_helpers import emit_window_menus
 import lief,pefile,capstone
 from keystone import Ks,KS_ARCH_X86,KS_MODE_64
 parser=argparse.ArgumentParser()
@@ -38,7 +39,7 @@ for dll,symbol in [('Qt6Widgets.dll',menu_name),('Qt6Gui.dll',visible_name)]:
 # Reserve a section for the helper, immutable strings and augmented unwind table.
 old_exception=p.OPTIONAL_HEADER.DATA_DIRECTORY[3]
 old_table=p.get_data(old_exception.VirtualAddress,old_exception.Size)
-sec=lief.PE.Section('.fbpatch');sec.content=[0]*((len(old_table)+0x2000+0xfff)&~0xfff)
+sec=lief.PE.Section('.fbpatch');sec.content=[0]*((len(old_table)+0x4000+0xfff)&~0xfff)
 sec.characteristics=0x60000020 # initialized code, readable/executable, not writable
 sec=binary.add_section(sec);rva=sec.virtual_address;va=base+rva
 content=bytearray(sec.content)
@@ -94,17 +95,27 @@ view_code,reset_code=emit_dock_helpers(va+0xc00,va+0xd80,imports,widgets,toggle_
 assert len(view_code)<0x100 and len(reset_code)<0x80
 put(0xc00,view_code);put(0xd80,reset_code)
 put(0xe00,bytes([1,4,1,0,4,0x62,0,0]));put(0xe20,bytes([1,4,1,0,4,0x62,0,0]))
+window_title=put(0x1800,b'Window\0');info_title=put(0x1840,b'Info\0')
+about_title=put(0x1880,b'About FurBrush\0')
+about_version=put(0x1900,b'FurBrush v%1\nBased on Sisir\nCopyright (c) 2026 Sisir Project\0')
+window_code,info_code=emit_window_menus(va+0x1000,va+0x1500,imports,window_title,info_title,widgets,toggle_name)
+assert len(window_code)<0x400 and len(info_code)<0x300
+put(0x1000,window_code);put(0x1500,info_code)
+put(0x2800,bytes([1,7,2,0,7,1,0x11,0]))
+put(0x2820,bytes([1,4,1,0,4,0xc2,0,0]))
 # UWOP_ALLOC_SMALL for sub rsp,0x38: permit Windows x64 stack unwinding.
 put(0x600,bytes([1,4,1,0,4,0x62,0,0]))
 new_table=old_table+struct.pack('<III',rva,rva+len(code),rva+0x600)
 if theme_code:new_table+=struct.pack('<III',rva+0x800,rva+0x800+len(theme_code),rva+0x680)
 new_table+=struct.pack('<III',rva+0xc00,rva+0xc00+len(view_code),rva+0xe00)
 new_table+=struct.pack('<III',rva+0xd80,rva+0xd80+len(reset_code),rva+0xe20)
-put(0x1000,new_table)
-entries=[struct.unpack_from('<III',content,0x1000+i) for i in range(0,len(new_table),12)]
+new_table+=struct.pack('<III',rva+0x1000,rva+0x1000+len(window_code),rva+0x2800)
+new_table+=struct.pack('<III',rva+0x1500,rva+0x1500+len(info_code),rva+0x2820)
+put(0x3000,new_table)
+entries=[struct.unpack_from('<III',content,0x3000+i) for i in range(0,len(new_table),12)]
 assert entries==sorted(entries,key=lambda e:e[0])
 sec.content=list(content)
-binary.data_directories[3].rva=rva+0x1000
+binary.data_directories[3].rva=rva+0x3000
 binary.data_directories[3].size=len(new_table)
 # Redirect exactly one C-string constructor to the longer title prefix.
 new_lea=b'\x48\x8d\x15'+struct.pack('<i',prefix-(base+0x251e20+7))
@@ -118,6 +129,15 @@ patch_va(base+0x21b137,b'\xe8'+struct.pack('<i',va+0xc00-(base+0x21b137+5))+b'\x
 # Default Layout already re-docks it; explicitly show/raise the same dock afterwards.
 assert p.get_data(0x1ef01c,6)==bytes.fromhex('ff1596231100')
 patch_va(base+0x1ef01c,b'\xe8'+struct.pack('<i',va+0xd80-(base+0x1ef01c+5))+b'\x90')
+# Window is created immediately after File, before later menus are appended.
+assert p.get_data(0x21a373,6)==bytes.fromhex('ff15176e0e00')
+patch_va(base+0x21a373,b'\xe8'+struct.pack('<i',va+0x1000-(base+0x21a373+5))+b'\x90')
+# Reuse the original About QAction and callback in a visible Info menu.
+assert p.get_data(0x21bbff,6)==bytes.fromhex('ff1553620e00')
+patch_va(base+0x21bbff,b'\xe8'+struct.pack('<i',va+0x1500-(base+0x21bbff+5))+b'\x90')
+for site,old,new in [(0x1e6002,bytes.fromhex('488d155f221300'),about_title),(0x1e61b6,bytes.fromhex('488d15bb201300'),about_version)]:
+ assert p.get_data(site,7)==old
+ patch_va(base+site,b'\x48\x8d\x15'+struct.pack('<i',new-(base+site+7)))
 # Replace both application-embedded QResource images, preserving static offsets.
 # These are distinct from the executable's Windows icon resource.
 art=Image.open(args.repo/'FurBrush.png').convert('RGBA')
@@ -167,7 +187,7 @@ assert check.get_data(0x251e20,7)==new_lea
 assert check.get_data(0x21bad4,6)==new_call
 assert check.get_data(rva+0x400,11)==b'FurBrush v\0'
 # Every original section must equal the input plus exactly the declared patches.
-assert len(check.DIRECTORY_ENTRY_EXCEPTION)==len(p.DIRECTORY_ENTRY_EXCEPTION)+3+(1 if theme_code else 0)
+assert len(check.DIRECTORY_ENTRY_EXCEPTION)==len(p.DIRECTORY_ENTRY_EXCEPTION)+5+(1 if theme_code else 0)
 for before,after in zip(p.sections,check.sections):
  assert before.Name==after.Name and before.VirtualAddress==after.VirtualAddress
  expected=bytearray(before.get_data());start=base+before.VirtualAddress
@@ -178,7 +198,7 @@ for before,after in zip(p.sections,check.sections):
  assert bytes(expected)==after.get_data(),before.Name
 assert [e.dll for e in p.DIRECTORY_ENTRY_IMPORT]==[e.dll for e in check.DIRECTORY_ENTRY_IMPORT]
 check.OPTIONAL_HEADER.CheckSum=check.generate_checksum();check.write(str(output))
-manifest={'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),'output_sha256':hashlib.sha256(output.read_bytes()).hexdigest(),'helper_va':hex(va),'helper_size':len(code),'title_instruction':hex(base+0x251e20),'help_instruction':hex(base+0x21bad4),'unwind_table_rva':hex(rva+0x1000),'viewport_menu_helper_va':hex(va+0xc00),'viewport_reset_helper_va':hex(va+0xd80),'theme_helper_va':hex(va+0x800) if theme_code else None,'theme_helper_size':len(theme_code),'embedded_icons':icon_details,'external_stylesheet_sites':style_sites,'note':'Static and emulator verification only; not tested on Windows.'}
+manifest={'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),'output_sha256':hashlib.sha256(output.read_bytes()).hexdigest(),'helper_va':hex(va),'helper_size':len(code),'title_instruction':hex(base+0x251e20),'help_instruction':hex(base+0x21bad4),'unwind_table_rva':hex(rva+0x3000),'window_menu_helper_va':hex(va+0x1000),'info_menu_helper_va':hex(va+0x1500),'viewport_menu_helper_va':hex(va+0xc00),'viewport_reset_helper_va':hex(va+0xd80),'theme_helper_va':hex(va+0x800) if theme_code else None,'theme_helper_size':len(theme_code),'embedded_icons':icon_details,'external_stylesheet_sites':style_sites,'note':'Static and emulator verification only; not tested on Windows.'}
 (artifacts/'native-patch.json').write_text(json.dumps(manifest,indent=2))
 (artifacts/'helper.bin').write_bytes(code)
 md=capstone.Cs(capstone.CS_ARCH_X86,capstone.CS_MODE_64)
