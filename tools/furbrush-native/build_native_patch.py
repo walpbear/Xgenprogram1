@@ -6,6 +6,7 @@ from pathlib import Path
 import argparse,hashlib,json,struct,io
 from PIL import Image
 from theme_helper import emit_theme_helper
+from dock_helpers import emit_dock_helpers
 import lief,pefile,capstone
 from keystone import Ks,KS_ARCH_X86,KS_MODE_64
 parser=argparse.ArgumentParser()
@@ -88,10 +89,17 @@ if args.retro_ui:
  put(0x800,theme_code)
  # UWOP_ALLOC_LARGE for 0x518-byte stack frame, 7-byte prologue.
  put(0x680,bytes([1,7,2,0,7,1,0xa3,0]))
+toggle_name=put(0xd00,b'?toggleViewAction@QDockWidget@@QEBAPEAVQAction@@XZ\0')
+view_code,reset_code=emit_dock_helpers(va+0xc00,va+0xd80,imports,widgets,toggle_name)
+assert len(view_code)<0x100 and len(reset_code)<0x80
+put(0xc00,view_code);put(0xd80,reset_code)
+put(0xe00,bytes([1,4,1,0,4,0x62,0,0]));put(0xe20,bytes([1,4,1,0,4,0x62,0,0]))
 # UWOP_ALLOC_SMALL for sub rsp,0x38: permit Windows x64 stack unwinding.
 put(0x600,bytes([1,4,1,0,4,0x62,0,0]))
 new_table=old_table+struct.pack('<III',rva,rva+len(code),rva+0x600)
 if theme_code:new_table+=struct.pack('<III',rva+0x800,rva+0x800+len(theme_code),rva+0x680)
+new_table+=struct.pack('<III',rva+0xc00,rva+0xc00+len(view_code),rva+0xe00)
+new_table+=struct.pack('<III',rva+0xd80,rva+0xd80+len(reset_code),rva+0xe20)
 put(0x1000,new_table)
 entries=[struct.unpack_from('<III',content,0x1000+i) for i in range(0,len(new_table),12)]
 assert entries==sorted(entries,key=lambda e:e[0])
@@ -104,6 +112,12 @@ patch_va(base+0x251e20,new_lea)
 # Keep Help menu creation/initialization; hide its menuAction in the helper.
 new_call=b'\xe8'+struct.pack('<i',va-(base+0x21bad4+5))+b'\x90'
 patch_va(base+0x21bad4,new_call)
+# Add the dock's own checkable toggle action to View; leave other menus intact.
+assert p.get_data(0x21b137,6)==bytes.fromhex('ff1553600e00')
+patch_va(base+0x21b137,b'\xe8'+struct.pack('<i',va+0xc00-(base+0x21b137+5))+b'\x90')
+# Default Layout already re-docks it; explicitly show/raise the same dock afterwards.
+assert p.get_data(0x1ef01c,6)==bytes.fromhex('ff1596231100')
+patch_va(base+0x1ef01c,b'\xe8'+struct.pack('<i',va+0xd80-(base+0x1ef01c+5))+b'\x90')
 # Replace both application-embedded QResource images, preserving static offsets.
 # These are distinct from the executable's Windows icon resource.
 art=Image.open(args.repo/'FurBrush.png').convert('RGBA')
@@ -153,7 +167,7 @@ assert check.get_data(0x251e20,7)==new_lea
 assert check.get_data(0x21bad4,6)==new_call
 assert check.get_data(rva+0x400,11)==b'FurBrush v\0'
 # Every original section must equal the input plus exactly the declared patches.
-assert len(check.DIRECTORY_ENTRY_EXCEPTION)==len(p.DIRECTORY_ENTRY_EXCEPTION)+1+(1 if theme_code else 0)
+assert len(check.DIRECTORY_ENTRY_EXCEPTION)==len(p.DIRECTORY_ENTRY_EXCEPTION)+3+(1 if theme_code else 0)
 for before,after in zip(p.sections,check.sections):
  assert before.Name==after.Name and before.VirtualAddress==after.VirtualAddress
  expected=bytearray(before.get_data());start=base+before.VirtualAddress
@@ -164,7 +178,7 @@ for before,after in zip(p.sections,check.sections):
  assert bytes(expected)==after.get_data(),before.Name
 assert [e.dll for e in p.DIRECTORY_ENTRY_IMPORT]==[e.dll for e in check.DIRECTORY_ENTRY_IMPORT]
 check.OPTIONAL_HEADER.CheckSum=check.generate_checksum();check.write(str(output))
-manifest={'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),'output_sha256':hashlib.sha256(output.read_bytes()).hexdigest(),'helper_va':hex(va),'helper_size':len(code),'title_instruction':hex(base+0x251e20),'help_instruction':hex(base+0x21bad4),'unwind_table_rva':hex(rva+0x1000),'theme_helper_va':hex(va+0x800) if theme_code else None,'theme_helper_size':len(theme_code),'embedded_icons':icon_details,'external_stylesheet_sites':style_sites,'note':'Static and emulator verification only; not tested on Windows.'}
+manifest={'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),'output_sha256':hashlib.sha256(output.read_bytes()).hexdigest(),'helper_va':hex(va),'helper_size':len(code),'title_instruction':hex(base+0x251e20),'help_instruction':hex(base+0x21bad4),'unwind_table_rva':hex(rva+0x1000),'viewport_menu_helper_va':hex(va+0xc00),'viewport_reset_helper_va':hex(va+0xd80),'theme_helper_va':hex(va+0x800) if theme_code else None,'theme_helper_size':len(theme_code),'embedded_icons':icon_details,'external_stylesheet_sites':style_sites,'note':'Static and emulator verification only; not tested on Windows.'}
 (artifacts/'native-patch.json').write_text(json.dumps(manifest,indent=2))
 (artifacts/'helper.bin').write_bytes(code)
 md=capstone.Cs(capstone.CS_ARCH_X86,capstone.CS_MODE_64)

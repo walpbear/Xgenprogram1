@@ -53,3 +53,13 @@ The current `--retro-ui` patch now wraps the local `QWidget::setStyleSheet` call
 The helper handles a missing/empty/oversized file, failed allocations and failed path lookup by applying the original style. It frees file/buffer resources, preserves Win64 calling conventions, and has its own unwind entry in the extended exception table. `theme_helper.py` emits it; `test_theme_helper.py` runs 20 emulated cases across two image bases, applying two actual QSS payloads and verifying path handling with spaces/Unicode, fallback, cleanup and register preservation. Original title/Help helper tests also still pass. A Qt widget test confirmed that a local Mint stylesheet overrides the original dark/purple style. These checks do not run the full Windows application.
 
 `FurBrush-Theme-Loader-Fix.zip` contains only the updated executable, readme and original license. It intentionally excludes QSS and saved preferences, preserving the user's chosen colors when extracted into the existing installation.
+
+## Viewport / Render lighting dock recovery
+
+The requested missing controls are Background/HDR/Light settings inside the Viewport dock, not the central rendering surface. Decompiled `FUN_140241270` builds its module-specific contents using the dock at MainWindow offset `0x1e0`. Default Layout (`FUN_1401eec90`) re-docks this widget without explicitly showing it. Qt testing reproduced that re-docking a hidden dock leaves it hidden.
+
+The current patch wraps the View menu creation call at `0x14021b137` and adds the dock's own `toggleViewAction()` through `QWidget::addAction`. The original menu builder keeps its real QMenu result and continues creating all existing View actions. In that version-specific caller, RDI is the original MainWindow receiver. The helper handles missing docks/exports without dereferencing nulls.
+
+It also wraps the Default Layout viewport `addDockWidget` call at `0x1401ef01c`: first perform the original re-docking, then show and raise the same widget. No settings deletion or renderer/scene changes are added. Both helpers preserve Win64 ABI and have unwind entries.
+
+`test_dock_helpers.py` passed 16 emulated success/failure/relocation cases; existing title and saved-theme tests passed 14 and 20 cases. Qt verified the real dock toggle and show/raise recovery behavior. The Windows application's full Render panel remains untested. The end-user ZIP contains only the executable, readme and original license, preserving color settings.

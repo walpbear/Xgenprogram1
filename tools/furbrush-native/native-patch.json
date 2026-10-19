@@ -1,11 +1,13 @@
 {
   "source_sha256": "7d5c695776a42a43ca652ba502aea36926db31c1a5ebe95c31899d05ae7d4b1b",
-  "output_sha256": "21945dede0a1cfe6d46db3dba2df0d93ab11d77639d0c4222d156a66f452738b",
+  "output_sha256": "685310b9db2ba5e7ccffc18c5b1cca6b321a0fabaced25b72ece0190ca18177e",
   "helper_va": "0x14043c000",
   "helper_size": 158,
   "title_instruction": "0x140251e20",
   "help_instruction": "0x14021bad4",
   "unwind_table_rva": "0x43d000",
+  "viewport_menu_helper_va": "0x14043cc00",
+  "viewport_reset_helper_va": "0x14043cd80",
   "theme_helper_va": "0x14043c800",
   "theme_helper_size": 396,
   "embedded_icons": [
